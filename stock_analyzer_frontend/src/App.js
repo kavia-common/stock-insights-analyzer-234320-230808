@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import "./App.css";
+import { runStockCheck } from "./api/stockCheckClient";
 
 /**
  * Stock Check (43-Factor Model) dashboard UI.
  * This file intentionally contains UI + local state only.
- * A future step will add API wiring and strict rendering based on the schema in the spec.
+ * In this step, we add API wiring for POST /run-stock-check with a deterministic fallback stub.
  */
 
 const MACRO_OVERRIDE_OPTIONS = [
@@ -79,32 +80,29 @@ function App() {
   // PUBLIC_INTERFACE
   const onRun = async () => {
     /**
-     * Trigger a Stock Check run.
-     * In this UI-only step, we simulate a run and render an empty scaffold.
-     * Future work will call POST /run-stock-check with:
-     * { current_date, prediction_date, macro_override }
+     * Trigger a Stock Check run via POST /run-stock-check.
+     *
+     * Failure handling (per spec):
+     * - No retries across time.
+     * - If backend is unreachable / times out / returns non-2xx:
+     *   return deterministic null-preserving stub output.
      */
     setError("");
     setIsRunning(true);
 
     try {
-      // Simulate latency so the UI demonstrates loading states.
-      await new Promise((r) => setTimeout(r, 500));
+      const payload = {
+        current_date: currentDate,
+        prediction_date: predictionDate,
+        macro_override: macroOverride ? macroOverride : null
+      };
+
+      const apiResult = await runStockCheck(payload);
 
       setLastRunAt(new Date());
-
-      // Keep schema-aligned placeholder so rendering can be wired later without UI churn.
-      // Note: rows are arrays of length 12, and UI must render in canonical order.
-      setResult({
-        header: {
-          trade_status: "NO_TRADE",
-          avg_predicted_growth: null,
-          dispersion: null,
-          sector_warning: false
-        },
-        rows: []
-      });
+      setResult(apiResult);
     } catch (e) {
+      // runStockCheck already falls back deterministically; this catch is a final safety net.
       setError("Failed to run Stock Check. Please try again.");
     } finally {
       setIsRunning(false);
