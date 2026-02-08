@@ -9,21 +9,7 @@
  * - Preserve nulls (never estimate or "fill in" missing values)
  */
 
-// Canonical 12 columns (order-locked by the spec)
-const CANONICAL_COLUMNS = [
-  "Rank",
-  "Ticker",
-  "Current EOD Price",
-  "Predicted Price",
-  "Predicted % Growth",
-  "3-Month",
-  "6-Month",
-  "12-Month",
-  "Signal",
-  "Hold / Exit Overlay",
-  "Actual EOD (Prediction Date)",
-  "% Growth vs Actual"
-];
+import { CANONICAL_COLUMNS, normalizeRunStockCheckResponse } from "../stockCheckSchema";
 
 const DEFAULT_TIMEOUT_MS = 15000;
 
@@ -68,64 +54,7 @@ function hashString32(str) {
   return h >>> 0;
 }
 
-/**
- * Ensure the response matches the strict schema:
- * {
- *   header: { trade_status, avg_predicted_growth, dispersion, sector_warning },
- *   rows: [ [ ...12 cells... ], ... ]
- * }
- *
- * Null-preserving behavior:
- * - missing/invalid values become null (or false for sector_warning default).
- * - rows that aren't arrays or wrong length are padded/truncated to 12 with nulls.
- *
- * @param {any} raw
- * @returns {{header: {trade_status: "TRADE"|"NO_TRADE", avg_predicted_growth: number|null, dispersion: number|null, sector_warning: boolean}, rows: any[][]}}
- */
-function normalizeRunStockCheckResponse(raw) {
-  const headerIn = raw && typeof raw === "object" ? raw.header : null;
-  const rowsIn = raw && typeof raw === "object" ? raw.rows : null;
 
-  const tradeStatus =
-    headerIn && (headerIn.trade_status === "TRADE" || headerIn.trade_status === "NO_TRADE")
-      ? headerIn.trade_status
-      : "NO_TRADE";
-
-  const avgPredGrowth =
-    headerIn && typeof headerIn.avg_predicted_growth === "number"
-      ? headerIn.avg_predicted_growth
-      : headerIn && headerIn.avg_predicted_growth === null
-        ? null
-        : null;
-
-  const dispersion =
-    headerIn && typeof headerIn.dispersion === "number"
-      ? headerIn.dispersion
-      : headerIn && headerIn.dispersion === null
-        ? null
-        : null;
-
-  const sectorWarning =
-    headerIn && typeof headerIn.sector_warning === "boolean" ? headerIn.sector_warning : false;
-
-  const rows = Array.isArray(rowsIn)
-    ? rowsIn.map((row) => {
-        const arr = Array.isArray(row) ? row.slice(0, CANONICAL_COLUMNS.length) : [];
-        while (arr.length < CANONICAL_COLUMNS.length) arr.push(null);
-        return arr;
-      })
-    : [];
-
-  return {
-    header: {
-      trade_status: tradeStatus,
-      avg_predicted_growth: avgPredGrowth,
-      dispersion,
-      sector_warning: sectorWarning
-    },
-    rows
-  };
-}
 
 /**
  * Deterministic null-preserving stub fallback.

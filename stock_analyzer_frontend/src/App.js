@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import { runStockCheck } from "./api/stockCheckClient";
+import { getCanonicalColumns, normalizeRunStockCheckResponse } from "./stockCheckSchema";
 
 /**
  * Stock Check (43-Factor Model) dashboard UI.
@@ -13,20 +14,7 @@ const MACRO_OVERRIDE_OPTIONS = [
   { value: "NO_TRADE", label: "NO_TRADE" }
 ];
 
-const CANONICAL_COLUMNS = [
-  "Rank",
-  "Ticker",
-  "Current EOD Price",
-  "Predicted Price",
-  "Predicted % Growth",
-  "3-Month",
-  "6-Month",
-  "12-Month",
-  "Signal",
-  "Hold / Exit Overlay",
-  "Actual EOD (Prediction Date)",
-  "% Growth vs Actual"
-];
+const CANONICAL_COLUMNS = getCanonicalColumns();
 
 function formatTodayISO() {
   const d = new Date();
@@ -98,9 +86,10 @@ function App() {
       };
 
       const apiResult = await runStockCheck(payload);
+      const normalized = normalizeRunStockCheckResponse(apiResult);
 
       setLastRunAt(new Date());
-      setResult(apiResult);
+      setResult(normalized);
     } catch (e) {
       // runStockCheck already falls back deterministically; this catch is a final safety net.
       setError("Failed to run Stock Check. Please try again.");
@@ -324,11 +313,15 @@ function App() {
                   {result?.rows?.length ? (
                     result.rows.map((row, idx) => (
                       <tr key={idx}>
-                        {CANONICAL_COLUMNS.map((_, colIdx) => (
-                          <td key={colIdx} className={colIdx === 1 ? "sc-td-ticker" : undefined}>
-                            {row?.[colIdx] ?? <span className="sc-muted">null</span>}
-                          </td>
-                        ))}
+                        {CANONICAL_COLUMNS.map((_, colIdx) => {
+                          const v = row?.[colIdx];
+                          const isNullish = v === null || typeof v === "undefined";
+                          return (
+                            <td key={colIdx} className={colIdx === 1 ? "sc-td-ticker" : undefined}>
+                              {isNullish ? <span className="sc-muted">—</span> : String(v)}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))
                   ) : (
