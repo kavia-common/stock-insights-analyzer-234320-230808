@@ -1,6 +1,7 @@
 import { runStockCheck } from "./api/stockCheckClient";
 import {
   CANONICAL_COLUMNS,
+  getOverlayIsolationFingerprint,
   getTop10RowsExcludingIntc,
   normalizeRunStockCheckResponse
 } from "./stockCheckSchema";
@@ -15,9 +16,9 @@ function getTickerToRowMap(rows) {
 }
 
 /**
- * Minimal "today" mock for tests that need "prediction date > today".
- * We don't depend on actual current time; the compliance rule we test is:
- * if backend gives null for future actuals, we must preserve nulls and not compute.
+ * 3.1 No Future Actuals
+ * We don't depend on real clock here; we simulate the scenario by providing
+ * a row where "Actual EOD (Prediction Date)" and "% Growth vs Actual" are null.
  */
 function buildFuturePredictionRawResponse() {
   return {
@@ -29,8 +30,16 @@ function buildFuturePredictionRawResponse() {
   };
 }
 
-describe("Stock Check forward-mode compliance suite", () => {
-  test("Column Order Lock: every normalized row is exactly 12 cells and mapping is stable", () => {
+describe("Stock Check forward-mode compliance suite (authoritative spec §3.1–§3.6)", () => {
+  beforeEach(() => {
+    // Some environments set REACT_APP_API_BASE/REACT_APP_BACKEND_URL to a real endpoint.
+    // The spec requires deterministic stub fallback when unreachable, but jsdom fetch failures
+    // can be noisy. For compliance tests we force the stub path by clearing base URLs.
+    process.env.REACT_APP_API_BASE = "";
+    process.env.REACT_APP_BACKEND_URL = "";
+  });
+
+  test("3.5 Column Order Lock: every normalized row is exactly 12 cells and index mapping is stable", () => {
     const raw = {
       header: { trade_status: "TRADE", avg_predicted_growth: null, dispersion: null, sector_warning: false },
       rows: [
@@ -57,6 +66,7 @@ describe("Stock Check forward-mode compliance suite", () => {
 
     const out = normalizeRunStockCheckResponse(raw);
 
+    // Every row must be exactly 12 cells.
     out.rows.forEach((row) => {
       expect(Array.isArray(row)).toBe(true);
       expect(row).toHaveLength(CANONICAL_COLUMNS.length);
@@ -67,21 +77,20 @@ describe("Stock Check forward-mode compliance suite", () => {
     expect(aapl).toHaveLength(12);
 
     // Spot-check canonical positions so index-to-column mapping stays unchanged.
-    // Index 0: Rank, 1: Ticker, 2: Current EOD Price
+    // Index 0: Rank, 1: Ticker, 2: Current EOD Price, 10: Actual EOD, 11: % Growth vs Actual
     expect(aapl[0]).toBe(1);
     expect(aapl[1]).toBe("AAPL");
     expect(aapl[2]).toBe("$190.25");
-    // Index 10/11 should exist and be null due to padding
     expect(aapl[10]).toBeNull();
     expect(aapl[11]).toBeNull();
 
     const msft = byTicker.get("MSFT");
     expect(msft).toHaveLength(12);
-    // The extra cell must not exist past index 11
+    // The extra cell must not exist past index 11.
     expect(msft[11]).toBeNull();
   });
 
-  test("No Future Actuals: future actual columns (10, 11) remain null (no filling / no computation)", () => {
+  test("3.1 No Future Actuals: future actual columns (10, 11) remain null (no filling / no computation)", () => {
     const raw = buildFuturePredictionRawResponse();
     const out = normalizeRunStockCheckResponse(raw);
 
@@ -94,7 +103,7 @@ describe("Stock Check forward-mode compliance suite", () => {
     expect(aapl[11]).toBeNull();
   });
 
-  test("No Hallucinated Prices: if API returns nulls, output remains null and is not replaced", () => {
+  test("3.2 No Hallucinated Prices: if API returns null for a price, output cell remains null and no calculation is performed", () => {
     const raw = {
       header: { trade_status: "TRADE", avg_predicted_growth: null, dispersion: null, sector_warning: false },
       rows: [
@@ -107,15 +116,20 @@ describe("Stock Check forward-mode compliance suite", () => {
     const byTicker = getTickerToRowMap(out.rows);
     const aapl = byTicker.get("AAPL");
 
+    // Price/prediction related fields remain null.
     expect(aapl[2]).toBeNull(); // Current EOD Price
     expect(aapl[3]).toBeNull(); // Predicted Price
     expect(aapl[4]).toBeNull(); // Predicted % Growth
+    // Future actuals remain null.
     expect(aapl[10]).toBeNull(); // Actual EOD (Prediction Date)
     expect(aapl[11]).toBeNull(); // % Growth vs Actual
+
+    // Additionally assert nothing "computed" sneaked in as a string/number.
+    expect(aapl[4]).not.toEqual(expect.stringMatching(/%/));
+    expect(aapl[4]).not.toEqual(expect.any(Number));
   });
 
-  test("Deterministic Output: same inputs + same API payloads => byte-for-byte identical output (stub path)", async () => {
-    // In tests, base URL is typically not set, so runStockCheck will return deterministic stub.
+  test("3.3 Deterministic Output: same inputs + same API payloads => byte-for-byte identical output (stub path)", async () => {
     const payload = { current_date: "2026-01-02", prediction_date: "2026-01-03", macro_override: null };
 
     const a = await runStockCheck(payload);
@@ -125,7 +139,7 @@ describe("Stock Check forward-mode compliance suite", () => {
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 
-  test("Overlay Isolation: changing TRADE/NO_TRADE or Hold/Exit overlay must not change rank/prediction fields", () => {
+  test("3.4 Overlay Isolation: TRADE/NO_TRADE and Hold/Exit overlays do not change rankings/predictions (core surface)", () => {
     const rawA = {
       header: { trade_status: "TRADE", avg_predicted_growth: null, dispersion: null, sector_warning: false },
       rows: [
@@ -154,18 +168,20 @@ describe("Stock Check forward-mode compliance suite", () => {
       const b = bMap.get(t);
 
       // Rank and prediction-related columns must match exactly.
-      // Specifically: 0..8 (Rank..Signal) are "core surface" and must not change.
+      // Spec phrasing: overlays must not change predictions or rankings.
+      // We assert columns 0..8 are invariant.
       for (let idx = 0; idx <= 8; idx += 1) {
         expect(b[idx]).toEqual(a[idx]);
       }
+      // Overlay column is allowed to differ.
+      expect(b[9]).not.toEqual(a[9]);
     });
 
-    // Also ensure the normalizer didn't reorder these rows due to header changes.
-    expect(outA.rows[0][1]).toBe("AAPL");
-    expect(outB.rows[0][1]).toBe("AAPL");
+    // Fingerprint excludes overlays; must match.
+    expect(getOverlayIsolationFingerprint(outA)).toBe(getOverlayIsolationFingerprint(outB));
   });
 
-  test("INTC Enforcement: INTC always present and rank is enforced to 11", () => {
+  test("3.6 INTC Enforcement: INTC always present and rank is enforced to 11", () => {
     const raw = {
       header: { trade_status: "TRADE", avg_predicted_growth: null, dispersion: null, sector_warning: false },
       rows: [
@@ -181,7 +197,7 @@ describe("Stock Check forward-mode compliance suite", () => {
     expect(byTicker.get("INTC")[0]).toBe(11);
   });
 
-  test("INTC Enforcement: if INTC exists but has a different rank, it is forced to 11 and other fields are preserved", () => {
+  test("3.6 INTC Enforcement: if INTC exists but has a different rank, it is forced to 11 and other fields are preserved", () => {
     const raw = {
       header: { trade_status: "NO_TRADE", avg_predicted_growth: null, dispersion: null, sector_warning: false },
       rows: [
@@ -202,7 +218,7 @@ describe("Stock Check forward-mode compliance suite", () => {
     expect(intc[3]).toBeNull();
   });
 
-  test("INTC Enforcement: INTC is excluded from Top-10 metrics computation", () => {
+  test("3.6 INTC Enforcement: INTC is excluded from Top-10 metrics computation (even if positioned in top 10)", () => {
     // Build 11 non-INTC rows + INTC somewhere in the list.
     const rows = [];
     for (let i = 1; i <= 11; i += 1) {
