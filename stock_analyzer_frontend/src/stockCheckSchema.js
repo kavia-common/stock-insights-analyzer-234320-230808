@@ -3,6 +3,10 @@
  *
  * UI + client MUST treat rows as positional arrays with 12 immutable columns.
  * Any attempt to reorder or infer keys is a system failure per spec.
+ *
+ * Additional compliance rules implemented here:
+ * - INTC Enforcement: INTC must always be present with Rank == 11.
+ * - Overlay Isolation: TRADE/NO_TRADE and Hold/Exit overlays must not alter rankings or predictions.
  */
 
 export const CANONICAL_COLUMNS = [
@@ -30,6 +34,10 @@ export const DEFAULT_HEADER = Object.freeze({
   dispersion: null,
   sector_warning: false
 });
+
+const RANK_COL = 0;
+const TICKER_COL = 1;
+const HOLD_EXIT_OVERLAY_COL = 9;
 
 /**
  * Coerce/normalize unknown header payload to strict schema.
@@ -73,6 +81,57 @@ function normalizeRow(row) {
 }
 
 /**
+ * Create a minimal INTC row consistent with strict schema.
+ * We do NOT fabricate any prices/predictions; blanks are preserved as null.
+ *
+ * @returns {any[]}
+ */
+function createIntcRow() {
+  const row = Array(CANONICAL_COLUMNS.length).fill(null);
+  row[RANK_COL] = 11;
+  row[TICKER_COL] = "INTC";
+  // Overlay column remains null unless backend explicitly provides it.
+  row[HOLD_EXIT_OVERLAY_COL] = null;
+  return row;
+}
+
+/**
+ * Ensure INTC is present and rank-locked to 11.
+ *
+ * Important:
+ * - We do NOT reorder the existing rows, because UI must render in array order.
+ * - We do NOT mutate other tickers' Rank/Predicted fields (overlay isolation).
+ * - We only (a) enforce INTC rank value if present, or (b) append INTC if missing.
+ *
+ * @param {any[][]} rows
+ * @returns {any[][]}
+ */
+function enforceIntcRank11(rows) {
+  const safeRows = Array.isArray(rows) ? rows.slice() : [];
+
+  let intcIndex = -1;
+  for (let i = 0; i < safeRows.length; i += 1) {
+    const ticker = safeRows[i]?.[TICKER_COL];
+    if (typeof ticker === "string" && ticker.trim().toUpperCase() === "INTC") {
+      intcIndex = i;
+      break;
+    }
+  }
+
+  if (intcIndex === -1) {
+    // Missing INTC: append a canonical empty row with rank fixed to 11.
+    safeRows.push(createIntcRow());
+    return safeRows;
+  }
+
+  // Present INTC: force rank to 11, leave all other columns as-is to preserve nulls.
+  const fixed = safeRows[intcIndex].slice();
+  fixed[RANK_COL] = 11;
+  safeRows[intcIndex] = fixed;
+  return safeRows;
+}
+
+/**
  * PUBLIC_INTERFACE
  */
 export function normalizeRunStockCheckResponse(raw) {
@@ -83,7 +142,11 @@ export function normalizeRunStockCheckResponse(raw) {
    *   rows: [ [..12 positional cells..], ...]
    * }
    *
-   * This function is the single source of truth for strict rendering.
+   * Compliance behaviors:
+   * - Column Order Lock: always 12 cells per row, in canonical order.
+   * - Null Preservation: never compute/fill values that are null/missing.
+   * - INTC Enforcement: ensure INTC exists with Rank == 11.
+   * - Overlay Isolation: normalization must not alter ranking/prediction fields based on overlay/header.
    *
    * @param {any} raw
    * @returns {{header: {trade_status:"TRADE"|"NO_TRADE", avg_predicted_growth:number|null, dispersion:number|null, sector_warning:boolean}, rows: any[][]}}
@@ -91,7 +154,8 @@ export function normalizeRunStockCheckResponse(raw) {
   const obj = raw && typeof raw === "object" ? raw : {};
   const header = normalizeHeader(obj.header);
 
-  const rows = Array.isArray(obj.rows) ? obj.rows.map(normalizeRow) : [];
+  const normalizedRows = Array.isArray(obj.rows) ? obj.rows.map(normalizeRow) : [];
+  const rows = enforceIntcRank11(normalizedRows);
 
   return { header, rows };
 }
