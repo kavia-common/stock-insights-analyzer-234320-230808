@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import { runStockCheck } from "./api/stockCheckClient";
-import { getCanonicalColumns, normalizeRunStockCheckResponse } from "./stockCheckSchema";
+import {
+  getCanonicalColumns,
+  getOverlayIsolationFingerprint,
+  getTop10RowsExcludingIntc,
+  normalizeRunStockCheckResponse
+} from "./stockCheckSchema";
 
 /**
  * Stock Check (43-Factor Model) dashboard UI.
@@ -58,6 +63,15 @@ function App() {
   const canRun = useMemo(() => {
     return Boolean(currentDate) && Boolean(predictionDate) && !isRunning;
   }, [currentDate, predictionDate, isRunning]);
+
+  const top10ExIntcCount = useMemo(() => {
+    if (!result?.rows) return null;
+    return getTop10RowsExcludingIntc(result.rows).length;
+  }, [result]);
+
+  const overlayIsolationFingerprint = useMemo(() => {
+    return getOverlayIsolationFingerprint(result);
+  }, [result]);
 
   // PUBLIC_INTERFACE
   const toggleTheme = () => {
@@ -260,12 +274,16 @@ function App() {
 
                 <div className="sc-summary-item">
                   <div className="sc-summary-k">Avg Predicted Growth</div>
-                  <div className="sc-summary-v">{result?.header?.avg_predicted_growth ?? <span className="sc-muted">—</span>}</div>
+                  <div className="sc-summary-v">
+                    {result?.header?.avg_predicted_growth ?? <span className="sc-muted">—</span>}
+                  </div>
                 </div>
 
                 <div className="sc-summary-item">
                   <div className="sc-summary-k">Dispersion</div>
-                  <div className="sc-summary-v">{result?.header?.dispersion ?? <span className="sc-muted">—</span>}</div>
+                  <div className="sc-summary-v">
+                    {result?.header?.dispersion ?? <span className="sc-muted">—</span>}
+                  </div>
                 </div>
 
                 <div className="sc-summary-item">
@@ -277,6 +295,26 @@ function App() {
                       ) : (
                         <span className="sc-pill sc-pill--good">FALSE</span>
                       )
+                    ) : (
+                      <span className="sc-muted">—</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="sc-summary-item">
+                  <div className="sc-summary-k">Top-10 Rows (ex INTC)</div>
+                  <div className="sc-summary-v">
+                    {typeof top10ExIntcCount === "number" ? top10ExIntcCount : <span className="sc-muted">—</span>}
+                  </div>
+                </div>
+
+                <div className="sc-summary-item">
+                  <div className="sc-summary-k">Overlay-Isolation Fingerprint</div>
+                  <div className="sc-summary-v">
+                    {overlayIsolationFingerprint ? (
+                      <span className="sc-mono" title={overlayIsolationFingerprint}>
+                        {overlayIsolationFingerprint.slice(0, 32)}…
+                      </span>
                     ) : (
                       <span className="sc-muted">—</span>
                     )}

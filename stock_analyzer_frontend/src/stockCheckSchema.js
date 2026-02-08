@@ -7,6 +7,7 @@
  * Additional compliance rules implemented here:
  * - INTC Enforcement: INTC must always be present with Rank == 11.
  * - Overlay Isolation: TRADE/NO_TRADE and Hold/Exit overlays must not alter rankings or predictions.
+ * - Metrics Compliance: INTC must be excluded from Top-10 metrics computations.
  */
 
 export const CANONICAL_COLUMNS = [
@@ -132,6 +133,16 @@ function enforceIntcRank11(rows) {
 }
 
 /**
+ * Returns true if a row is the INTC row.
+ * @param {any[]} row
+ * @returns {boolean}
+ */
+function isIntcRow(row) {
+  const t = row?.[TICKER_COL];
+  return typeof t === "string" && t.trim().toUpperCase() === "INTC";
+}
+
+/**
  * PUBLIC_INTERFACE
  */
 export function normalizeRunStockCheckResponse(raw) {
@@ -166,4 +177,59 @@ export function normalizeRunStockCheckResponse(raw) {
 export function getCanonicalColumns() {
   /** Returns the canonical column labels array (immutable order). */
   return CANONICAL_COLUMNS;
+}
+
+/**
+ * PUBLIC_INTERFACE
+ */
+export function getTop10RowsExcludingIntc(rows) {
+  /**
+   * Return the first 10 rows in *array order*, excluding INTC.
+   * This is used for UI metrics that must be "Top-10 excluding INTC" per spec.
+   *
+   * Important:
+   * - We do NOT sort or reorder; we respect the backend-provided order.
+   * - We exclude INTC regardless of where it appears (it is rank-locked to 11 but may appear anywhere).
+   *
+   * @param {any[][]} rows
+   * @returns {any[][]}
+   */
+  const safe = Array.isArray(rows) ? rows : [];
+  const out = [];
+  for (let i = 0; i < safe.length && out.length < 10; i += 1) {
+    const r = safe[i];
+    if (Array.isArray(r) && !isIntcRow(r)) out.push(r);
+  }
+  return out;
+}
+
+/**
+ * PUBLIC_INTERFACE
+ */
+export function getOverlayIsolationFingerprint(result) {
+  /**
+   * Build a deterministic fingerprint of ranking+prediction fields ONLY, ignoring overlays.
+   *
+   * Why:
+   * - Used by UI diagnostics / metrics to guarantee overlays do not influence the
+   *   model's ranking/prediction surface.
+   * - Excludes: header.trade_status and row[9] Hold/Exit overlay.
+   *
+   * Included from each row:
+   * - columns 0..8 (Rank..Signal) only.
+   *
+   * @param {{header:any, rows:any[][]}|null} result
+   * @returns {string|null}
+   */
+  if (!result || typeof result !== "object") return null;
+  const rows = Array.isArray(result.rows) ? result.rows : [];
+
+  const surface = rows.map((r) => {
+    const row = Array.isArray(r) ? r : [];
+    const core = [];
+    for (let idx = 0; idx <= 8; idx += 1) core.push(row[idx] ?? null);
+    return core;
+  });
+
+  return JSON.stringify(surface);
 }
